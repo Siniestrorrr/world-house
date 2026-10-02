@@ -102,7 +102,8 @@ function openHouse(h){
   var isOwn=auth&&auth.id===h.user_id;
   var gal=h.items.map(function(it,idx){
     var body=it.k==='a'?'<div class="au">♪</div>':'<img src="'+esc(it.file_url||img(it.seed||h.u+idx,300))+'" alt="'+esc(it.title)+'" loading="lazy">'+(it.k==='v'?'<span class="pl">▶ video</span>':'');
-    var fig='<figure>'+body+'<figcaption>'+esc(it.title)+'</figcaption></figure>';
+    var fav='<span class="fav" data-pid="'+esc(it.post_id)+'" style="position:absolute;top:6px;right:6px;background:#000;color:#FFE500;font-size:14px;padding:2px 6px;cursor:pointer;border:1px solid #FFE500;">♥ '+it.favorites+'</span>';
+    var fig='<figure style="position:relative;">'+body+fav+'<figcaption>'+esc(it.title)+'</figcaption></figure>';
     return fig;
   }).join('');
   var upBtn=isOwn?'<input type="file" id="uf" accept="image/*,audio/*,video/*" style="display:none"><button class="btn" id="up" type="button">Subir archivo</button>':'';
@@ -110,15 +111,44 @@ function openHouse(h){
   w.innerHTML='<div class="bar"><span>casa de '+esc(h.u)+'™</span><button class="x" aria-label="Cerrar">×</button></div>'+
     '<div class="bd"><p class="meta">'+esc(h.c)+' · hora local '+time(h.tz)+'</p><div class="gal">'+gal+'</div>'+
     (isOwn?upBtn:'')+
-    '<h3>Comentarios</h3><div id="cl"></div>'+
-    (isOwn?'<form id="cf"><input maxlength="140" placeholder="Escribe un comentario" aria-label="Comentario"><button class="btn">Comentar</button></form>':'')+'</div>';
+    '<h3>Comentarios</h3><div id="cl" style="max-height:160px;overflow-y:auto;margin-bottom:10px;"></div>'+
+    '<form id="cf"><input maxlength="140" placeholder="Escribe un comentario" aria-label="Comentario"><button class="btn" type="submit">Comentar</button></form></div>';
   w.hidden=false;
+  
+  document.querySelectorAll('.fav').forEach(function(el){
+    el.onclick=async function(){
+      if(!auth){toast('Inicia sesión primero');return}
+      var pid=el.dataset.pid;
+      var {data:fav}=await sb.from('favorites').select('id').eq('post_id',pid).eq('user_id',auth.id);
+      if(fav&&fav.length){
+        await sb.from('favorites').delete().eq('id',fav[0].id);
+      }else{
+        await sb.from('favorites').insert({post_id:pid,user_id:auth.id});
+      }
+      setTimeout(function(){location.reload()},500);
+    };
+  });
+  
   function drawComments(){
-    var cl=document.getElementById('cl');cl.innerHTML='';
-    h.comments.forEach(function(c){var p=document.createElement('p');p.className='cm';var b=document.createElement('b');b.textContent=c.u;p.appendChild(b);p.appendChild(document.createTextNode(c.t));cl.appendChild(p)});
+    var cl=document.getElementById('cl');
+    cl.innerHTML='';
+    h.items.forEach(function(it){
+      if(!it.post_id||!it.comments||it.comments.length===0)return;
+      it.comments.forEach(function(c){
+        var p=document.createElement('p');
+        p.className='cm';
+        var b=document.createElement('b');
+        b.textContent=c.username;
+        p.appendChild(b);
+        p.appendChild(document.createTextNode(' '+c.text));
+        cl.appendChild(p);
+      });
+    });
   }
   drawComments();
+  
   w.querySelector('.x').onclick=function(){w.hidden=true};
+  
   if(isOwn){
     var uf=document.getElementById('uf'),up=document.getElementById('up');
     if(up)up.onclick=function(){uf.click()};
@@ -136,13 +166,22 @@ function openHouse(h){
       toast('¡Subido!');uf.value='';
       setTimeout(function(){location.reload()},1000);
     };
-    var cf=document.getElementById('cf');
-    if(cf)cf.onsubmit=function(e){
-      e.preventDefault();var i=e.target.querySelector('input'),v=i.value.trim();
-      if(!v){toast('Escribe algo antes de comentar');return}
-      h.comments.push({u:'tú',t:v});i.value='';drawComments();
-    };
   }
+  
+  var cf=document.getElementById('cf');
+  cf.onsubmit=async function(e){
+    e.preventDefault();
+    if(!auth){toast('Inicia sesión primero');return}
+    var i=cf.querySelector('input'),v=i.value.trim();
+    if(!v){toast('Escribe algo antes de comentar');return}
+    var pid=h.items[0]?.post_id;
+    if(!pid){toast('Falta post_id');return}
+    var {error}=await sb.from('comments').insert({post_id:pid,user_id:auth.id,username:auth.email.split('@')[0],text:v});
+    if(error){toast('Error: '+error.message);return}
+    i.value='';
+    toast('Comentario añadido');
+    setTimeout(function(){location.reload()},800);
+  };
 }
 
 async function initAuth(){
@@ -180,19 +219,33 @@ async function loadHouses(){
   if(h_err){console.error(h_err);return}
   var {data:posts_data,error:p_err}=await sb.from('posts').select('*');
   if(p_err){console.error(p_err);return}
+  var {data:comments_data,error:c_err}=await sb.from('comments').select('*');
+  if(c_err){console.error(c_err);return}
+  var {data:favorites_data,error:f_err}=await sb.from('favorites').select('*');
+  if(f_err){console.error(f_err);return}
   houses=[];
   var postsByUser={};
+  var commentsByPost={};
+  var favoritesByPost={};
   (posts_data||[]).forEach(function(p){
     if(!postsByUser[p.user_id])postsByUser[p.user_id]=[];
     postsByUser[p.user_id].push(p);
+  });
+  (comments_data||[]).forEach(function(c){
+    if(!commentsByPost[c.post_id])commentsByPost[c.post_id]=[];
+    commentsByPost[c.post_id].push(c);
+  });
+  (favorites_data||[]).forEach(function(f){
+    if(!favoritesByPost[f.post_id])favoritesByPost[f.post_id]=0;
+    favoritesByPost[f.post_id]++;
   });
   houses_data.forEach(function(h){
     var posts=postsByUser[h.user_id]||[];
     var items=posts.map(function(p){
       var k=p.file_type.startsWith('image')?'i':p.file_type.startsWith('audio')?'a':'v';
-      return{k:k,file_url:p.file_url,title:p.title||'sin título'};
+      return{k:k,file_url:p.file_url,title:p.title||'sin título',post_id:p.id,comments:commentsByPost[p.id]||[],favorites:favoritesByPost[p.id]||0};
     });
-    houses.push({u:h.username,c:'su lugar',tz:'UTC',lat:h.lat,lng:h.lng,comments:[],items:items,_id:h.id,user_id:h.user_id});
+    houses.push({u:h.username,c:'su lugar',tz:'UTC',lat:h.lat,lng:h.lng,items:items,_id:h.id,user_id:h.user_id});
   });
   houses.forEach(addHouse);
   drawMarkers();
