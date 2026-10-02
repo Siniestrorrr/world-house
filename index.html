@@ -90,7 +90,8 @@ function addHouse(h){
   var tiles=h.items.slice(0,3).map(function(it,i){
     var s='left:'+POS[i][0]+'px;top:'+POS[i][1]+'px;animation-delay:'+(i*0.8)+'s';
     if(it.k==='a')return'<div class="t a" style="'+s+'">♪</div>';
-    return'<div class="t" style="'+s+'"><img src="'+img(it.seed,100)+'" alt=""></div>';
+    if(it.file_url)return'<div class="t" style="'+s+'"><img src="'+esc(it.file_url)+'" alt="" loading="lazy"></div>';
+    return'<div class="t" style="'+s+'"><img src="'+img(it.seed||h.u+i,100)+'" alt=""></div>';
   }).join('')||'<div class="t e">+</div>';
   var icon=L.divIcon({className:'',iconSize:[100,80],iconAnchor:[50,40],html:'<div class="hs">'+tiles+'<span class="nm">'+esc(h.u)+' · '+esc(h.c)+'</span></div>'});
   L.marker([h.lat,h.lng],{icon:icon,title:'Casa de '+h.u}).addTo(map).on('click',function(){openHouse(h)});
@@ -98,15 +99,19 @@ function addHouse(h){
 
 function openHouse(h){
   var w=document.getElementById('win');
-  var gal=h.items.map(function(it){
-    var body=it.k==='a'?'<div class="au">♪</div>':'<img src="'+img(it.seed,300)+'" alt="'+esc(it.title)+'" loading="lazy">'+(it.k==='v'?'<span class="pl">▶ video</span>':'');
-    return'<figure>'+body+'<figcaption>'+esc(it.title)+'</figcaption></figure>';
+  var isOwn=auth&&auth.id===h.user_id;
+  var gal=h.items.map(function(it,idx){
+    var body=it.k==='a'?'<div class="au">♪</div>':'<img src="'+esc(it.file_url||img(it.seed||h.u+idx,300))+'" alt="'+esc(it.title)+'" loading="lazy">'+(it.k==='v'?'<span class="pl">▶ video</span>':'');
+    var fig='<figure>'+body+'<figcaption>'+esc(it.title)+'</figcaption></figure>';
+    return fig;
   }).join('');
-  if(!gal)gal='<div><p class="empty">Tu casa está vacía. Sube tu primera imagen, audio o video.</p><button class="btn" id="up">Subir archivo</button></div>';
+  var upBtn=isOwn?'<input type="file" id="uf" accept="image/*,audio/*,video/*" style="display:none"><button class="btn" id="up" type="button">Subir archivo</button>':'';
+  if(!gal)gal='<div><p class="empty">'+(isOwn?'Tu casa está vacía. Sube tu primera imagen, audio o video.':'Esta casa está vacía.')+'</p></div>';
   w.innerHTML='<div class="bar"><span>casa de '+esc(h.u)+'™</span><button class="x" aria-label="Cerrar">×</button></div>'+
     '<div class="bd"><p class="meta">'+esc(h.c)+' · hora local '+time(h.tz)+'</p><div class="gal">'+gal+'</div>'+
+    (isOwn?upBtn:'')+
     '<h3>Comentarios</h3><div id="cl"></div>'+
-    '<form id="cf"><input maxlength="140" placeholder="Escribe un comentario" aria-label="Comentario"><button class="btn">Comentar</button></form></div>';
+    (isOwn?'<form id="cf"><input maxlength="140" placeholder="Escribe un comentario" aria-label="Comentario"><button class="btn">Comentar</button></form>':'')+'</div>';
   w.hidden=false;
   function drawComments(){
     var cl=document.getElementById('cl');cl.innerHTML='';
@@ -114,12 +119,30 @@ function openHouse(h){
   }
   drawComments();
   w.querySelector('.x').onclick=function(){w.hidden=true};
-  var up=document.getElementById('up');if(up)up.onclick=function(){toast('Subir archivos llega en el paso 3')};
-  document.getElementById('cf').onsubmit=function(e){
-    e.preventDefault();var i=e.target.querySelector('input'),v=i.value.trim();
-    if(!v){toast('Escribe algo antes de comentar');return}
-    h.comments.push({u:'tú',t:v});i.value='';drawComments();
-  };
+  if(isOwn){
+    var uf=document.getElementById('uf'),up=document.getElementById('up');
+    if(up)up.onclick=function(){uf.click()};
+    if(uf)uf.onchange=async function(){
+      if(!this.files[0]){toast('Elige un archivo');return}
+      var f=this.files[0];
+      if(f.size>10485760){toast('Máximo 10MB');return}
+      var path='uploads/'+auth.id+'/'+Date.now()+'_'+f.name;
+      toast('Subiendo...');
+      var {error}=await sb.storage.from('uploads').upload(path,f,{upsert:false});
+      if(error){toast('Error: '+error.message);return}
+      var {data}=sb.storage.from('uploads').getPublicUrl(path);
+      var {error:e}=await sb.from('posts').insert({user_id:auth.id,file_url:data.publicUrl,file_type:f.type,title:f.name.split('.')[0]});
+      if(e){toast('Error: '+e.message);return}
+      toast('¡Subido!');uf.value='';
+      setTimeout(function(){location.reload()},1000);
+    };
+    var cf=document.getElementById('cf');
+    if(cf)cf.onsubmit=function(e){
+      e.preventDefault();var i=e.target.querySelector('input'),v=i.value.trim();
+      if(!v){toast('Escribe algo antes de comentar');return}
+      h.comments.push({u:'tú',t:v});i.value='';drawComments();
+    };
+  }
 }
 
 async function initAuth(){
@@ -153,11 +176,23 @@ async function doAuth(isSignup){
 }
 
 async function loadHouses(){
-  var {data,error}=await sb.from('houses').select('*');
-  if(error){console.error(error);return}
+  var {data:houses_data,error:h_err}=await sb.from('houses').select('*');
+  if(h_err){console.error(h_err);return}
+  var {data:posts_data,error:p_err}=await sb.from('posts').select('*');
+  if(p_err){console.error(p_err);return}
   houses=[];
-  data.forEach(function(h){
-    houses.push({u:h.username,c:'su lugar',tz:'UTC',lat:h.lat,lng:h.lng,comments:[],items:[{k:'i',seed:h.username}],_id:h.id});
+  var postsByUser={};
+  (posts_data||[]).forEach(function(p){
+    if(!postsByUser[p.user_id])postsByUser[p.user_id]=[];
+    postsByUser[p.user_id].push(p);
+  });
+  houses_data.forEach(function(h){
+    var posts=postsByUser[h.user_id]||[];
+    var items=posts.map(function(p){
+      var k=p.file_type.startsWith('image')?'i':p.file_type.startsWith('audio')?'a':'v';
+      return{k:k,file_url:p.file_url,title:p.title||'sin título'};
+    });
+    houses.push({u:h.username,c:'su lugar',tz:'UTC',lat:h.lat,lng:h.lng,comments:[],items:items,_id:h.id,user_id:h.user_id});
   });
   houses.forEach(addHouse);
   drawMarkers();
